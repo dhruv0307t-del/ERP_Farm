@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <title>CattleERP – Livestock Management Software</title>
+  <style>
+    .hero-wrap{
+      position:relative;
+      overflow:hidden;
+      border-radius:1.5rem;
+      background:#000;
+      min-height:320px;
+    }
+
+    /* carousel container that replaces single hero-bg */
+    .hero-carousel{
+      position:absolute;
+      inset:0;
+      overflow:hidden;
+    }
+    .hero-slide{
+      position:absolute;
+      inset:0;
+      background-position:center;
+      background-size:cover;
+      background-repeat:no-repeat;
+      opacity:0;
+      transition:opacity 700ms ease-in-out;
+      will-change: opacity;
+    }
+    .hero-slide.show{
+      opacity:1;
+      z-index:1;
+    }
+
+    .hero-overlay{
+      position:absolute;
+      inset:0;
+      background:radial-gradient(circle at 10% 20%, rgba(0,0,0,.4), transparent 60%),
+                 linear-gradient(120deg, rgba(0,0,0,.75), rgba(0,0,0,.15));
+      z-index:2;
+    }
+    .hero-content{
+      position:relative;
+      z-index:3;
+      color:#fff;
+      padding:3rem 2.5rem;
+    }
+    .hero-pill{
+      display:inline-flex;
+      align-items:center;
+      gap:.35rem;
+      padding:.25rem .75rem;
+      border-radius:999px;
+      background:rgba(15,118,63,.9);
+      font-size:.8rem;
+      font-weight:500;
+    }
+    .hero-cta-main{
+      padding:.8rem 1.6rem;
+      border-radius:999px;
+      font-weight:600;
+      border:none;
+    }
+    .hero-cta-main.btn-dark{
+      background:#111827;
+    }
+    .hero-cta-main.btn-light{
+      background:#fff;
+      color:#111827;
+    }
+    .hero-shadow-arc{
+      position:absolute;
+      inset:auto -40% -35%;
+      height:130px;
+      background:radial-gradient(circle at 50% 0, rgba(255,255,255,.75), transparent 55%);
+      opacity:.9;
+      z-index:2;
+    }
+
+    /* small carousel controls (dots) */
+    .carousel-dots{
+      position:absolute;
+      bottom:1rem;
+      left:50%;
+      transform:translateX(-50%);
+      z-index:4;
+      display:flex;
+      gap:.5rem;
+    }
+    .carousel-dots button{
+      width:10px;height:10px;border-radius:50%;border:none;
+      background:rgba(255,255,255,.45);cursor:pointer;
+    }
+    .carousel-dots button.active{ background:rgba(255,255,255,0.95); }
+
+    @media (max-width:767px){
+      .d-hide-sm { display:none!important; }
+      .hero-content{ padding:1.5rem; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+
+<div class="hero-wrap mb-5">
+  <div class="hero-carousel" id="heroCarousel" aria-hidden="false">
+    <!-- use url_for to produce correct /static/... URLs -->
+    <div class="hero-slide show" style="background-image: url('{{ url_for('static', path='images/IMG_4131.jpg') }}');" data-index="0" role="img" aria-label="Cattle image 1"></div>
+
+    <div class="hero-slide" style="background-image: url('{{ url_for('static', path='images/IMG_4132.jpg') }}');" data-index="1" role="img" aria-label="Cattle image 2"></div>
+
+    <div class="hero-slide" style="background-image: url('{{ url_for('static', path='images/IMG_4133.jpg') }}');" data-index="2" role="img" aria-label="Cattle image 3"></div>
+
+    <!-- fallback / external Pexels image -->
+
+    <!-- small styled overlay and shadow arc (keeps original look) -->
+    <div class="hero-overlay"></div>
+    <div class="hero-shadow-arc"></div>
+
+    <!-- dots -->
+    <div class="carousel-dots" id="carouselDots" aria-hidden="false">
+      <button data-i="0" class="active" aria-label="Show slide 1"></button>
+      <button data-i="1" aria-label="Show slide 2"></button>
+      <button data-i="2" aria-label="Show slide 3"></button>
+      <button data-i="3" aria-label="Show slide 4"></button>
+    </div>
+  </div>
+
+  <div class="hero-content d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between gap-4">
+    <div class="col-md-7">
+      <div class="hero-pill mb-3">
+        <i class="bi bi-activity"></i>
+        <span>Livestock management software</span>
+      </div>
+      <h1 class="display-5 fw-bold mb-3">
+        Improve herd health & yields with a simple, powerful cattle ERP.
+      </h1>
+      <p class="lead mb-4" style="max-width:34rem;">
+        Track animals, milk, breeding and calving in one place. Export clean datasets for analytics and machine learning.
+      </p>
+      <div class="d-flex flex-wrap gap-2">
+        <a href="/animals" class="btn hero-cta-main btn-light">
+          <i class="bi bi-list-ul me-1"></i> Manage animals
+        </a>
+        <a href="/dashboard" class="btn hero-cta-main btn-dark">
+          <i class="bi bi-speedometer2 me-1"></i> View dashboard
+        </a>
+        <a href="/login" class="btn btn-outline-light ms-md-2">
+          <i class="bi bi-box-arrow-in-right me-1"></i> Login
+        </a>
+      </div>
+      <div class="mt-3 small text-white-50">
+        No subscriptions here — this is your own local ERP, running on <code>FastAPI + SQLite</code>.
+      </div>
+    </div>
+
+    <div class="col-md-4 text-md-end">
+      <div class="bg-white bg-opacity-90 rounded-4 p-3 text-dark shadow-sm">
+        <h6 class="fw-semibold mb-2">
+          Daily snapshot (from ERP)
+        </h6>
+        <ul class="list-unstyled small mb-0">
+          <li class="d-flex justify-content-between">
+            <span>Animals recorded</span>
+            <strong>{{ animals_count if animals_count is defined else '-' }}</strong>
+          </li>
+          <li class="d-flex justify-content-between">
+            <span>Milk entries</span>
+            <strong>{{ milk_entries_count if milk_entries_count is defined else '-' }}</strong>
+          </li>
+          <li class="d-flex justify-content-between">
+            <span>Active gestations</span>
+            <strong>{{ gestations_count if gestations_count is defined else '-' }}</strong>
+          </li>
+        </ul>
+        <div class="small text-muted mt-2">
+          These numbers come from your <code>erp.db</code> file.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- rest of the home page unchanged... keep your existing content below this line -->
+
+<div class="row g-4">
+  <div class="col-md-8">
+    <div class="card card-quiet p-4 mb-3">
+      <h4 class="mb-2">What CattleERP tracks</h4>
+      <p class="mb-0 small text-muted">
+        Add animals once, then record milk yield per day and breeding events like Heat, AI, PD and calving. The system calculates
+        predicted calving dates automatically using a configurable gestation length.
+      </p>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-6 mb-3">
+        <div class="card p-3 h-100">
+          <h5 class="mb-1">Animals</h5>
+          <p class="small text-muted mb-2">
+            Keep ear tag, sex, breed and birthdate for every animal. Add per-animal notes and history.
+          </p>
+          <a href="/animals" class="small">Open animals list →</a>
+        </div>
+      </div>
+      <div class="col-sm-6 mb-3">
+        <div class="card p-3 h-100">
+          <h5 class="mb-1">Breeding & calving</h5>
+          <p class="small text-muted mb-2">
+            Log AI / Natural Service and PD events. Get automatic predicted calving dates and mark actual calving.
+          </p>
+          <span class="badge text-bg-success">ML-friendly data</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-4">
+    <div class="card p-3 mb-3">
+      <h6 class="mb-2">Quick actions</h6>
+      <div class="d-grid gap-2">
+        <a href="/animals" class="btn btn-outline-success">
+          <i class="bi bi-list-ul me-1"></i> View animals
+        </a>
+        <a href="/dashboard" class="btn btn-outline-secondary">
+          <i class="bi bi-speedometer2 me-1"></i> Open dashboard
+        </a>
+        <a href="/login" class="btn btn-outline-dark">
+          <i class="bi bi-box-arrow-in-right me-1"></i> Login
+        </a>
+      </div>
+    </div>
+
+    <div class="card p-3">
+      <h6 class="mb-2">Tips</h6>
+      <ul class="small mb-0">
+        <li>Use correct birthdates (<code>YYYY-MM-DD</code>) for better age-wise analytics.</li>
+        <li>Record AI / Heat events to get meaningful calving predictions.</li>
+        <li>Backup your <code>erp.db</code> file before experiments & model training.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Simple vanilla JS carousel - swaps slides every 1s (1000ms)
+  (function(){
+    const intervalMs = 1000; // change slide every 1 second
+    const slides = Array.from(document.querySelectorAll('.hero-slide'));
+    const dots = Array.from(document.querySelectorAll('#carouselDots button'));
+    if(!slides.length) return;
+
+    let idx = 0;
+    let timer = null;
+
+    function show(i){
+      slides.forEach((s, j) => {
+        s.classList.toggle('show', j === i);
+      });
+      dots.forEach((d, j) => d.classList.toggle('active', j === i));
+      idx = i;
+    }
+
+    function next(){
+      show((idx + 1) % slides.length);
+    }
+
+    // wire dots
+    dots.forEach(d => {
+      d.addEventListener('click', (e) => {
+        stopAuto();
+        const i = Number(d.dataset.i);
+        show(i);
+        startAuto();
+      });
+    });
+
+    function startAuto(){
+      stopAuto();
+      timer = setInterval(next, intervalMs);
+    }
+    function stopAuto(){
+      if(timer) { clearInterval(timer); timer = null; }
+    }
+
+    // start
+    show(0);
+    startAuto();
+
+    // pause on hover to let user look
+    const carousel = document.getElementById('heroCarousel');
+    carousel.addEventListener('mouseenter', stopAuto);
+    carousel.addEventListener('mouseleave', startAuto);
+  })();
+</script>
+
+{% endblock %}

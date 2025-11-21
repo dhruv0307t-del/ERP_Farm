@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <title>CattleERP — Dashboard</title>
+{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+  <h2 class="h3 mb-1">Farm dashboard</h2>
+  <p class="small text-muted mb-0">
+    Overview of animals, milk yield and breeding activity.
+  </p>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3 col-sm-6">
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <div class="small text-muted">Total animals</div>
+        <div class="h3 mb-0 fw-bold">{{ total_animals }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <div class="small text-muted">Today's milk (L)</div>
+        <div class="h3 mb-0 fw-bold">{{ today_milk }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <div class="small text-muted">Avg last 7 days (L/day)</div>
+        <div class="h3 mb-0 fw-bold">{{ avg_7 }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <div class="small text-muted">Pregnant cows</div>
+        <div class="h3 mb-0 fw-bold">{{ pregnant }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card shadow-sm border-0 h-100">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h5 class="mb-0">Milk production (last 14 days)</h5>
+          <span class="small text-muted">Auto-calculated from daily entries</span>
+        </div>
+        <div style="height:260px;">
+          <canvas id="milkChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card shadow-sm border-0 mb-3">
+      <div class="card-body">
+        <h6 class="mb-2">Recent breeding events</h6>
+        {% if recent_events %}
+          <ul class="list-unstyled small mb-0">
+            {% for ev in recent_events %}
+              <li class="mb-2">
+                <strong>{{ ev.event_type }}</strong>
+                <span class="text-muted">on {{ ev.event_date }}</span>
+                {% if ev.notes %}
+                  <div class="text-muted">{{ ev.notes }}</div>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="small text-muted mb-0">No breeding events recorded yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <h6 class="mb-2">Shortcuts</h6>
+        <div class="d-grid gap-2">
+          <a href="/animals" class="btn btn-outline-success btn-sm">
+            <i class="bi bi-list-ul me-1"></i> Manage animals
+          </a>
+          <a href="/home" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-house-door me-1"></i> Back to home
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const chartLabels = {{ chart_labels | tojson | safe }};
+  const chartValues = {{ chart_values | tojson | safe }};
+
+  const ctx = document.getElementById('milkChart');
+  if (ctx) {
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: chartLabels,
+        datasets: [{
+          label: 'Milk (L)',
+          data: chartValues,
+          borderWidth: 3,
+          borderColor: 'rgb(25, 135, 84)',
+          backgroundColor: 'rgba(25, 135, 84, 0.18)',
+          tension: 0.3,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          fill: true
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { beginAtZero: true }
+        }
+      }
+    });
+  }
+</script>
+{% endblock %}

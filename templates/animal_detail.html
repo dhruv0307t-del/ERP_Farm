@@ -1,0 +1,175 @@
+<!-- templates/animal_detail.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Animal {{ animal.tag_no }} — Cattle ERP</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body { background:#f8fafb; }
+      .label { font-size:.85rem; color:#6c757d; }
+    </style>
+  </head>
+  <body>
+    <nav class="navbar navbar-expand-lg bg-white shadow-sm">
+      <div class="container">
+        <a class="navbar-brand" href="/dashboard">CattleERP</a>
+        <div class="ms-auto">
+          <a class="btn btn-outline-secondary" href="/animals">Back to animals</a>
+          <a class="btn btn-outline-danger ms-2" href="/logout">Logout</a>
+        </div>
+      </div>
+    </nav>
+
+    <main class="container py-4">
+      <div class="d-flex align-items-center justify-content-between mb-3">
+        <div>
+          <h3 class="mb-0">Tag: {{ animal.tag_no }}</h3>
+          <div class="small-muted">Added: {{ animal.created_at.strftime('%Y-%m-%d') }}</div>
+        </div>
+        <div>
+          <a class="btn btn-sm btn-outline-secondary" href="/animals/{{ animal.id }}/edit">Edit</a>
+          <form method="post" action="/animals/{{ animal.id }}/delete" style="display:inline-block" onsubmit="return confirm('Delete this animal?');">
+            <button class="btn btn-sm btn-outline-danger">Delete</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="row g-4">
+        <div class="col-lg-6">
+          <div class="card p-3">
+            <h5>Animal Details</h5>
+            <dl class="row">
+              <dt class="col-sm-4 label">Type</dt><dd class="col-sm-8">{{ animal.cattle_type }}</dd>
+              <dt class="col-sm-4 label">Sex</dt><dd class="col-sm-8">{{ animal.sex }}</dd>
+              <dt class="col-sm-4 label">Birthdate</dt><dd class="col-sm-8">{{ animal.birthdate }}</dd>
+              <dt class="col-sm-4 label">Mother Tag No.</dt><dd class="col-sm-8">{{ animal.mother_tag_no or "-" }}</dd>
+              <dt class="col-sm-4 label">Lactating</dt><dd class="col-sm-8">{% if animal.lactating %}Yes{% else %}No{% endif %}</dd>
+              <dt class="col-sm-4 label">Pregnant</dt><dd class="col-sm-8">{% if animal.pregnant %}Yes{% else %}No{% endif %}</dd>
+              <dt class="col-sm-4 label">Vaccinated</dt><dd class="col-sm-8">{% if animal.vaccinated %}Yes{% else %}No{% endif %}</dd>
+              <dt class="col-sm-4 label">Health</dt><dd class="col-sm-8">{{ animal.health or "-" }}</dd>
+              <dt class="col-sm-4 label">Weight (kg)</dt><dd class="col-sm-8">{{ "%.1f"|format(animal.weight or 0.0) }}</dd>
+              <dt class="col-sm-4 label">Reproductions</dt><dd class="col-sm-8">{{ animal.reproductions or 0 }}</dd>
+            </dl>
+          </div>
+
+          <div class="card p-3 mt-3">
+            <h5>Breeding Events</h5>
+            <ul class="list-group list-group-flush mb-3">
+              {% for ev in breeding_events %}
+              <li class="list-group-item">
+                <div><strong>{{ ev.event_type }}</strong> — {{ ev.event_date }}</div>
+                <div class="small-muted">{{ ev.notes or "" }}</div>
+              </li>
+              {% else %}
+              <li class="list-group-item small-muted">No breeding events</li>
+              {% endfor %}
+            </ul>
+
+            <h6 class="mb-2">Add Event</h6>
+            <form method="post" action="/breeding/{{ animal.id }}/event" class="row g-2">
+              <div class="col-5">
+                <select name="event_type" class="form-select">
+                  <option value="Heat">Heat</option>
+                  <option value="AI">AI</option>
+                  <option value="NaturalService">NaturalService</option>
+                  <option value="PDPositive">PDPositive</option>
+                  <option value="PDNegative">PDNegative</option>
+                </select>
+              </div>
+              <div class="col-4"><input name="event_date" type="date" class="form-control" required /></div>
+              <div class="col-3"><button class="btn btn-primary w-100">Add</button></div>
+              <div class="col-12 mt-2">
+                <input name="notes" class="form-control" placeholder="Notes (optional)" />
+              </div>
+            </form>
+          </div>
+
+          <div class="card p-3 mt-3">
+            <h5>Vaccination Reminders</h5>
+            <ul class="list-group list-group-flush mb-3">
+              {% for r in vac_reminders %}
+              <li class="list-group-item">
+                <div><strong>{{ r.reminder_date }}</strong></div>
+                <div class="small-muted">{{ r.notes or "" }}</div>
+              </li>
+              {% else %}
+              <li class="list-group-item small-muted">No reminders</li>
+              {% endfor %}
+            </ul>
+
+            <h6 class="mb-2">Add Reminder</h6>
+            <form method="post" action="/animals/{{ animal.id }}/vaccination_reminder" class="row g-2">
+              <div class="col-5">
+                <input name="reminder_date" type="date" class="form-control" required />
+              </div>
+              <div class="col-7">
+                <input name="notes" class="form-control" placeholder="Note (e.g. vaccine type, phone no.)"/>
+              </div>
+              <div class="col-12 mt-2">
+                <button class="btn btn-outline-success">Add Reminder</button>
+              </div>
+            </form>
+          </div>
+
+        </div>
+
+        <div class="col-lg-6">
+          <div class="card p-3">
+            <h5>Milk Entries</h5>
+            <table class="table table-sm mb-0">
+              <thead><tr><th>Date</th><th>AM</th><th>PM</th><th>Total</th></tr></thead>
+              <tbody>
+                {% for m in milk_entries %}
+                  <tr>
+                    <td>{{ m.entry_date }}</td>
+                    <td>{{ m.am_liters }}</td>
+                    <td>{{ m.pm_liters }}</td>
+                    <td>{{ m.total_liters }}</td>
+                  </tr>
+                {% else %}
+                  <tr><td colspan="4" class="small-muted">No milk data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">Add / Update Milk</h6>
+            <form method="post" action="/milk/{{ animal.id }}" class="row g-2">
+              <div class="col-5">
+                <input name="entry_date" type="date" class="form-control" value="{{ today }}" required />
+              </div>
+              <div class="col-2">
+                <input name="am_liters" type="number" step="0.1" class="form-control" placeholder="AM" />
+              </div>
+              <div class="col-2">
+                <input name="pm_liters" type="number" step="0.1" class="form-control" placeholder="PM" />
+              </div>
+              <div class="col-3">
+                <button class="btn btn-success w-100">Save Milk</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card p-3 mt-3">
+            <h5>Gestation</h5>
+            {% if gestation %}
+              <div>Service date: {{ gestation.service_date }}</div>
+              <div>Predicted calving: {{ gestation.predicted_calving_date }}</div>
+              {% if gestation.actual_calving_date %}<div>Actual calving: {{ gestation.actual_calving_date }}</div>{% endif %}
+              <form method="post" action="/gestation/{{ animal.id }}/calved" class="row g-2 mt-2">
+                <div class="col-7"><input name="calving_date" type="date" class="form-control" required /></div>
+                <div class="col-5"><button class="btn btn-primary w-100">Mark Calved</button></div>
+              </form>
+            {% else %}
+              <div class="small-muted">No gestation records</div>
+            {% endif %}
+          </div>
+
+        </div>
+      </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>

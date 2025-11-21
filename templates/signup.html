@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6 col-lg-5">
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-4">
+        <div class="text-center mb-3">
+          <div class="mb-2">
+            <span class="badge rounded-pill text-bg-success px-3 py-2">
+              New Farm Onboarding
+            </span>
+          </div>
+          <h2 class="h4 mb-1">Create your farm account</h2>
+          <p class="text-muted small mb-0">
+            One admin login per farm. You can add more users later if needed.
+          </p>
+        </div>
+
+        {% if error %}
+        <div class="alert alert-danger py-2">
+          {{ error }}
+        </div>
+        {% endif %}
+
+        <form method="post" action="/signup">
+          <!-- Farm details -->
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Farm name</label>
+            <input
+              type="text"
+              name="farm_name"
+              class="form-control"
+              placeholder="e.g. Shree Krishna Dairy"
+              required
+              value="{{ form.farm_name if form is defined }}"
+            />
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Farm location (optional)</label>
+            <input
+              type="text"
+              name="farm_location"
+              class="form-control"
+              placeholder="Village / City"
+              value="{{ form.farm_location if form is defined }}"
+            />
+          </div>
+
+          <hr class="my-3" />
+
+          <!-- User details -->
+          <div class="mb-3">
+            <label class="form-label">Your name (optional)</label>
+            <input
+              type="text"
+              name="full_name"
+              class="form-control"
+              placeholder="Owner / manager name"
+              value="{{ form.full_name if form is defined }}"
+            />
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Username</label>
+            <input
+              type="text"
+              name="username"
+              class="form-control"
+              placeholder="Choose a login username"
+              required
+              value="{{ form.username if form is defined }}"
+            />
+          </div>
+
+          <div class="mb-2">
+            <label class="form-label fw-semibold">Password</label>
+            <input
+              type="password"
+              name="password"
+              class="form-control"
+              placeholder="Create a strong password"
+              required
+            />
+          </div>
+          <div class="mb-3">
+            <small class="text-muted">
+              Minimum 6–8 characters recommended. Keep it safe.
+            </small>
+          </div>
+
+          <button type="submit" class="btn btn-success w-100 mb-2">
+            <i class="bi bi-person-plus"></i> Create farm & continue
+          </button>
+        </form>
+
+        <p class="text-center text-muted small mt-3 mb-0">
+          Already registered?
+          <a href="/login">Sign in instead</a>
+        </p>
+      </div>
+    </div>
+
+    <div class="text-center mt-3">
+      <a href="/" class="small text-muted text-decoration-none">
+        ← Back to home
+      </a>
+    </div>
+  </div>
+</div>
+{% endblock %}
