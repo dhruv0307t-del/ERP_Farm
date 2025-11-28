@@ -31,22 +31,31 @@ from passlib.exc import UnknownHashError
 
 app = FastAPI(title="Cattle ERP with Auth")
 
-# serve static files (so /static/... works for images, css, js)
+# mount static files so templates can reference /static/...
+# ensure you have a "static/" directory at repo root with images/css/js you need
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# session middleware (simple signed cookie)
+# session middleware (simple signed cookie) - read secret from env if present
+SESSION_SECRET = os.getenv("SESSION_SECRET", "replace-with-a-long-random-secret")
 app.add_middleware(
     SessionMiddleware,
-    secret_key="replace-with-a-long-random-secret",  # change in production
+    secret_key=SESSION_SECRET,
 )
 
+# DB selection: prefer DATABASE_URL (for production e.g. Render Postgres), fallback to sqlite file
 DB_PATH = "erp.db"
-engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+DB_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
+
+# create engine; when sqlite, pass check_same_thread=False for FastAPI multi-threaded use
+if DB_URL.startswith("sqlite"):
+    engine = create_engine(DB_URL, echo=False, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(DB_URL, echo=False)
 
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["datetime"] = datetime
 
-# password hashing (pbkdf2 to avoid bcrypt/backends problems)
+# password hashing (pbkdf2 to avoid bcrypt/backend issues on some hosts)
 pwdctx = CryptContext(
     schemes=["pbkdf2_sha256"],
     default="pbkdf2_sha256",
@@ -90,7 +99,7 @@ class Animal(SQLModel, table=True):
     breed_id: Optional[int] = Field(default=None, foreign_key="breed.id")
     farm_id: Optional[int] = Field(default=None, foreign_key="farm.id")
 
-    # Existing + new fields
+    # Extended fields requested
     cattle_type: str = Field(default="Cow")  # Cow / Buffalo / etc.
     mother_tag_no: Optional[str] = Field(default=None)
     lactating: bool = Field(default=False)
@@ -178,6 +187,7 @@ def migrate_add_animal_columns(db_path: str = DB_PATH) -> None:
       - weight (REAL default 0.0)
       - reproductions (INTEGER default 0)
     """
+    # only runs for sqlite fallback DB file
     if not os.path.exists(db_path):
         return
 
@@ -234,9 +244,13 @@ def verify_password(plain: str, hashed: str) -> bool:
 def init_db() -> None:
     """Create tables, run migrations, create default farm/admin if missing."""
     create_db_and_tables()
-    migrate_add_animal_columns(DB_PATH)
+    # run sqlite-only migration (safe no-op for Postgres)
+    # only attempt when using local sqlite file DB
+    if DB_URL.startswith("sqlite"):
+        migrate_add_animal_columns(DB_PATH)
 
     with Session(engine) as session:
+        # default farm
         farm = session.exec(select(Farm)).first()
         if not farm:
             farm = Farm(name="Default Farm", location="Unknown")
@@ -244,6 +258,7 @@ def init_db() -> None:
             session.commit()
             session.refresh(farm)
 
+        # default admin user (if missing)
         admin = session.exec(select(User).where(User.username == "admin")).first()
         if not admin:
             admin = User(
@@ -298,7 +313,7 @@ def require_login(request: Request, db: Session) -> User:
 
 
 # ---------------------------------------------------------------------
-# Auth routes (login/logout/signup preserved)
+# Auth routes (login/logout/signup)
 # ---------------------------------------------------------------------
 
 
@@ -398,15 +413,14 @@ def signup(
 
 
 # ---------------------------------------------------------------------
-# Public home/landing
+# Public home/landing (pass user so template can show/hide login/signup)
 # ---------------------------------------------------------------------
 
 
 @app.get("/", response_class=HTMLResponse)
 def root_redirect(request: Request, session: Session = Depends(get_session)):
-    """Show marketing home; pass user if logged in so template can adapt."""
     user = get_current_user(request, session)
-    # optional counts for the hero snapshot - restricted to user's farm
+    # optional hero counts limited to user's farm
     animals_count = None
     milk_entries_count = None
     gestations_count = None
@@ -416,7 +430,6 @@ def root_redirect(request: Request, session: Session = Depends(get_session)):
 
         stmt_milk = select(MilkYieldDaily).where(MilkYieldDaily.entry_date == date.today())
         milk_rows = session.exec(stmt_milk).all()
-        # farm filter
         if user.farm_id:
             milk_entries_count = sum(1 for m in milk_rows if (session.get(Animal, m.animal_id) and session.get(Animal, m.animal_id).farm_id == user.farm_id))
         else:
@@ -434,7 +447,6 @@ def root_redirect(request: Request, session: Session = Depends(get_session)):
 
 @app.get("/home", response_class=HTMLResponse)
 def home(request: Request, session: Session = Depends(get_session)):
-    """Home page — pass user for conditional UI (login/signup vs logout)."""
     user = get_current_user(request, session)
 
     animals_count = None
