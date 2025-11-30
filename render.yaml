@@ -1,11 +1,17 @@
 services:
+services:
   - type: web
-    name: cattle-erp
+    name: erp-farm
     env: python
-    plan: free
-    region: oregon
-    branch: main
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT --workers 2
-    pythonVersion: "3.11.4"
-    autoDeploy: true
+    region: oregon   # ya jo region tum use kar rahe ho
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.8
+    buildCommand: >
+      pip install --upgrade pip &&
+      pip install -r requirements.txt &&
+      python scripts/init_db.py
+    startCommand: >
+      gunicorn -k uvicorn.workers.UvicornWorker app.main:app
+      --bind 0.0.0.0:$PORT
+      --workers 2
