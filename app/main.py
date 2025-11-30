@@ -1,7 +1,7 @@
 # app/main.py
 from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict
 import sqlite3
 import os
 import shutil
@@ -26,36 +26,24 @@ from passlib.context import CryptContext
 from passlib.exc import UnknownHashError
 
 # ---------------------------------------------------------------------
-# App, DB, templates
+# App, templates, static
 # ---------------------------------------------------------------------
 
 app = FastAPI(title="Cattle ERP with Auth")
 
-# mount static files so templates can reference /static/...
-# ensure you have a "static/" directory at repo root with images/css/js you need
+# serve static files (so /static/... works for images, css, js)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# session middleware (simple signed cookie) - read secret from env if present
-SESSION_SECRET = os.getenv("SESSION_SECRET", "replace-with-a-long-random-secret")
+# session middleware (simple signed cookie)
 app.add_middleware(
     SessionMiddleware,
-    secret_key=SESSION_SECRET,
+    secret_key="replace-with-a-long-random-secret",  # change in production
 )
-
-# DB selection: prefer DATABASE_URL (for production e.g. Render Postgres), fallback to sqlite file
-DB_PATH = "erp.db"
-DB_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
-
-# create engine; when sqlite, pass check_same_thread=False for FastAPI multi-threaded use
-if DB_URL.startswith("sqlite"):
-    engine = create_engine(DB_URL, echo=False, connect_args={"check_same_thread": False})
-else:
-    engine = create_engine(DB_URL, echo=False)
 
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["datetime"] = datetime
 
-# password hashing (pbkdf2 to avoid bcrypt/backend issues on some hosts)
+# password hashing (pbkdf2 to avoid bcrypt/backends problems)
 pwdctx = CryptContext(
     schemes=["pbkdf2_sha256"],
     default="pbkdf2_sha256",
@@ -64,9 +52,41 @@ pwdctx = CryptContext(
 
 DEFAULT_GESTATION_DAYS = 283  # cows (adjust per breed later)
 
+# ---------------------------------------------------------------------
+# DATABASE CONFIG: master DB + per-farm DBs
+# ---------------------------------------------------------------------
+
+DB_MASTER = "erp_master.db"  # master DB: users, farms, etc.
+_engine_cache: Dict[str, "Engine"] = {}  # cache for engines
+
+
+def get_engine_for_path(path: str):
+    """Return (cached) engine for a sqlite path."""
+    if path not in _engine_cache:
+        _engine_cache[path] = create_engine(f"sqlite:///{path}", echo=False)
+    return _engine_cache[path]
+
+
+def get_master_engine():
+    return get_engine_for_path(DB_MASTER)
+
+
+def get_farm_db_path(farm_id: Optional[int]) -> str:
+    if farm_id is None:
+        return DB_MASTER
+    return f"erp_farm_{farm_id}.db"
+
+
+def get_engine_for_farm(farm_id: Optional[int]):
+    return get_engine_for_path(get_farm_db_path(farm_id))
+
+
+def create_tables_for_engine(engine):
+    SQLModel.metadata.create_all(engine)
+
 
 # ---------------------------------------------------------------------
-# Models
+# Models (unchanged) - we'll use same models for master & farm DBs
 # ---------------------------------------------------------------------
 
 
@@ -99,7 +119,7 @@ class Animal(SQLModel, table=True):
     breed_id: Optional[int] = Field(default=None, foreign_key="breed.id")
     farm_id: Optional[int] = Field(default=None, foreign_key="farm.id")
 
-    # Extended fields requested
+    # Existing + new fields
     cattle_type: str = Field(default="Cow")  # Cow / Buffalo / etc.
     mother_tag_no: Optional[str] = Field(default=None)
     lactating: bool = Field(default=False)
@@ -155,12 +175,8 @@ class VaccinationReminder(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------
-# DB helpers & migration
+# DB helpers & migration (adapted for master + farm)
 # ---------------------------------------------------------------------
-
-
-def create_db_and_tables() -> None:
-    SQLModel.metadata.create_all(engine)
 
 
 def _table_has_column(db_path: str, table: str, column: str) -> bool:
@@ -174,20 +190,10 @@ def _table_has_column(db_path: str, table: str, column: str) -> bool:
     return column in cols
 
 
-def migrate_add_animal_columns(db_path: str = DB_PATH) -> None:
+def migrate_add_animal_columns(db_path: str) -> None:
     """
     Add missing animal columns to existing DB (with backup).
-    Adds:
-      - cattle_type (TEXT)
-      - mother_tag_no (TEXT)
-      - lactating (BOOLEAN default 0)
-      - pregnant (BOOLEAN default 0)
-      - vaccinated (BOOLEAN default 0)
-      - health (TEXT)
-      - weight (REAL default 0.0)
-      - reproductions (INTEGER default 0)
     """
-    # only runs for sqlite fallback DB file
     if not os.path.exists(db_path):
         return
 
@@ -225,9 +231,74 @@ def migrate_add_animal_columns(db_path: str = DB_PATH) -> None:
     conn.close()
 
 
-def get_session():
-    with Session(engine) as session:
+def create_db_and_tables_for_master_and_farm(farm_id: Optional[int] = None):
+    """
+    Ensure tables exist:
+      - If farm_id is None -> ensure master DB tables are created
+      - If farm_id provided -> create per-farm DB file and run migrations
+    """
+    if farm_id is None:
+        eng = get_master_engine()
+        create_tables_for_engine(eng)
+    else:
+        path = get_farm_db_path(farm_id)
+        eng = get_engine_for_farm(farm_id)
+        create_tables_for_engine(eng)
+        migrate_add_animal_columns(path)
+
+
+def init_master_db() -> None:
+    """Create master tables, and a default farm/admin if missing."""
+    master_eng = get_master_engine()
+    create_tables_for_engine(master_eng)
+
+    with Session(master_eng) as session:
+        farm = session.exec(select(Farm)).first()
+        if not farm:
+            farm = Farm(name="Default Farm", location="Unknown")
+            session.add(farm)
+            session.commit()
+            session.refresh(farm)
+            # create per-farm DB for default farm too
+            create_db_and_tables_for_master_and_farm(farm.id)
+
+        admin = session.exec(select(User).where(User.username == "admin")).first()
+        if not admin:
+            admin = User(
+                username="admin",
+                full_name="Super Admin",
+                hashed_password=hash_password("adminpass"),
+                is_admin=True,
+                farm_id=farm.id,
+            )
+            session.add(admin)
+            session.commit()
+
+# ---------------------------------------------------------------------
+# Session dependencies
+# ---------------------------------------------------------------------
+
+
+def get_master_session():
+    eng = get_master_engine()
+    with Session(eng) as session:
         yield session
+
+
+def get_farm_session(request: Request):
+    """
+    Return a session bound to the farm DB determined by request.session['farm_id'].
+    If the user has no farm set, we fallback to master DB to avoid errors.
+    """
+    farm_id = request.session.get("farm_id")
+    eng = get_engine_for_farm(farm_id)
+    with Session(eng) as session:
+        yield session
+
+
+# ---------------------------------------------------------------------
+# Password helpers
+# ---------------------------------------------------------------------
 
 
 def hash_password(plain: str) -> str:
@@ -241,79 +312,63 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def init_db() -> None:
-    """Create tables, run migrations, create default farm/admin if missing."""
-    create_db_and_tables()
-    # run sqlite-only migration (safe no-op for Postgres)
-    # only attempt when using local sqlite file DB
-    if DB_URL.startswith("sqlite"):
-        migrate_add_animal_columns(DB_PATH)
-
-    with Session(engine) as session:
-        # default farm
-        farm = session.exec(select(Farm)).first()
-        if not farm:
-            farm = Farm(name="Default Farm", location="Unknown")
-            session.add(farm)
-            session.commit()
-            session.refresh(farm)
-
-        # default admin user (if missing)
-        admin = session.exec(select(User).where(User.username == "admin")).first()
-        if not admin:
-            admin = User(
-                username="admin",
-                full_name="Super Admin",
-                hashed_password=hash_password("adminpass"),
-                is_admin=True,
-                farm_id=farm.id,
-            )
-            session.add(admin)
-            session.commit()
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
-
-
 # ---------------------------------------------------------------------
-# Small helpers
+# User helpers (always read users from master DB)
 # ---------------------------------------------------------------------
 
 
-def form_bool(value: Optional[str]) -> bool:
-    """
-    Convert common form values to bool:
-    - checkbox sends "on" when checked
-    - may receive "yes"/"true"/"1"
-    """
-    if value is None:
-        return False
-    v = str(value).lower()
-    return v in ("on", "yes", "true", "1")
-
-
-def get_current_user(request: Request, session: Session) -> Optional[User]:
+def get_current_user(request: Request) -> Optional[User]:
     user_id = request.session.get("user_id")
     if not user_id:
         return None
-    user = session.get(User, user_id)
-    if not user:
-        request.session.clear()
-        return None
-    return user
+    master_eng = get_master_engine()
+    with Session(master_eng) as ms:
+        user = ms.get(User, user_id)
+        if not user:
+            request.session.clear()
+            return None
+        return user
 
 
-def require_login(request: Request, db: Session) -> User:
-    user = get_current_user(request, db)
+def require_login(request: Request) -> User:
+    user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=302, detail="Login required")
     return user
 
 
 # ---------------------------------------------------------------------
-# Auth routes (login/logout/signup)
+# Startup - initialize master DB and default farm + per-farm DBs for existing farms
+# ---------------------------------------------------------------------
+
+
+@app.on_event("startup")
+def on_startup():
+    # init master DB
+    init_master_db()
+
+    # ensure per-farm DB exists for each farm in master
+    master_eng = get_master_engine()
+    with Session(master_eng) as session:
+        farms = session.exec(select(Farm)).all()
+        for f in farms:
+            create_db_and_tables_for_master_and_farm(f.id)
+
+
+# ---------------------------------------------------------------------
+# Small form helpers
+# ---------------------------------------------------------------------
+
+
+def form_bool(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    v = str(value).lower()
+    return v in ("on", "yes", "true", "1")
+
+
+# ---------------------------------------------------------------------
+# Auth routes (login/logout/signup) - use master DB for users and farms
 # ---------------------------------------------------------------------
 
 
@@ -330,9 +385,9 @@ def do_login(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    session: Session = Depends(get_session),
+    master_session: Session = Depends(get_master_session),
 ):
-    user = session.exec(select(User).where(User.username == username)).first()
+    user = master_session.exec(select(User).where(User.username == username)).first()
     if not user or not verify_password(password, user.hashed_password):
         return templates.TemplateResponse(
             "login.html",
@@ -343,6 +398,7 @@ def do_login(
             status_code=400,
         )
 
+    # set session values (farm_id used to select per-farm DB)
     request.session["user_id"] = user.id
     request.session["is_admin"] = user.is_admin
     request.session["farm_id"] = user.farm_id
@@ -357,7 +413,7 @@ def logout(request: Request):
 
 
 @app.get("/signup", response_class=HTMLResponse)
-def signup_form(request: Request):
+def signup_form(request: Request, master_session: Session = Depends(get_master_session)):
     return templates.TemplateResponse("signup.html", {"request": request})
 
 
@@ -369,9 +425,9 @@ def signup(
     full_name: str = Form(""),
     username: str = Form(...),
     password: str = Form(...),
-    session: Session = Depends(get_session),
+    master_session: Session = Depends(get_master_session),
 ):
-    existing = session.exec(select(User).where(User.username == username)).first()
+    existing = master_session.exec(select(User).where(User.username == username)).first()
     if existing:
         return templates.TemplateResponse(
             "signup.html",
@@ -389,9 +445,12 @@ def signup(
         )
 
     farm = Farm(name=farm_name, location=farm_location or None)
-    session.add(farm)
-    session.commit()
-    session.refresh(farm)
+    master_session.add(farm)
+    master_session.commit()
+    master_session.refresh(farm)
+
+    # create per-farm DB and tables instantly for isolation
+    create_db_and_tables_for_master_and_farm(farm.id)
 
     user = User(
         username=username,
@@ -400,9 +459,9 @@ def signup(
         farm_id=farm.id,
         is_admin=True,
     )
-    session.add(user)
-    session.commit()
-    session.refresh(user)
+    master_session.add(user)
+    master_session.commit()
+    master_session.refresh(user)
 
     request.session["user_id"] = user.id
     request.session["username"] = user.username
@@ -413,68 +472,55 @@ def signup(
 
 
 # ---------------------------------------------------------------------
-# Public home/landing (pass user so template can show/hide login/signup)
+# Public home/landing
 # ---------------------------------------------------------------------
 
 
 @app.get("/", response_class=HTMLResponse)
-def root_redirect(request: Request, session: Session = Depends(get_session)):
-    user = get_current_user(request, session)
-    # optional hero counts limited to user's farm
+def root_redirect(request: Request, farm_session: Session = Depends(get_farm_session)):
+    user = get_current_user(request)
     animals_count = None
     milk_entries_count = None
     gestations_count = None
     if user:
         stmt = select(Animal).where(Animal.farm_id == user.farm_id) if user.farm_id else select(Animal)
-        animals_count = len(session.exec(stmt).all())
+        animals_count = len(farm_session.exec(stmt).all())
 
         stmt_milk = select(MilkYieldDaily).where(MilkYieldDaily.entry_date == date.today())
-        milk_rows = session.exec(stmt_milk).all()
-        if user.farm_id:
-            milk_entries_count = sum(1 for m in milk_rows if (session.get(Animal, m.animal_id) and session.get(Animal, m.animal_id).farm_id == user.farm_id))
-        else:
-            milk_entries_count = len(milk_rows)
+        milk_rows = farm_session.exec(stmt_milk).all()
+        milk_entries_count = len(milk_rows)
 
         gest_q = select(Gestation).where((Gestation.predicted_calving_date >= date.today()) & (Gestation.actual_calving_date.is_(None)))
-        gest_list = session.exec(gest_q).all()
-        if user.farm_id:
-            gestations_count = sum(1 for g in gest_list if (session.get(Animal, g.animal_id) and session.get(Animal, g.animal_id).farm_id == user.farm_id))
-        else:
-            gestations_count = len(gest_list)
+        gest_list = farm_session.exec(gest_q).all()
+        gestations_count = len(gest_list)
 
     return templates.TemplateResponse("home.html", {"request": request, "user": user, "animals_count": animals_count, "milk_entries_count": milk_entries_count, "gestations_count": gestations_count})
 
 
 @app.get("/home", response_class=HTMLResponse)
-def home(request: Request, session: Session = Depends(get_session)):
-    user = get_current_user(request, session)
-
+def home(request: Request, farm_session: Session = Depends(get_farm_session)):
+    user = get_current_user(request)
     animals_count = None
     milk_entries_count = None
     gestations_count = None
     if user:
         stmt = select(Animal).where(Animal.farm_id == user.farm_id) if user.farm_id else select(Animal)
-        animals_count = len(session.exec(stmt).all())
+        animals_count = len(farm_session.exec(stmt).all())
 
         stmt_milk = select(MilkYieldDaily).where(MilkYieldDaily.entry_date == date.today())
-        milk_rows = session.exec(stmt_milk).all()
-        if user.farm_id:
-            milk_entries_count = sum(1 for m in milk_rows if (session.get(Animal, m.animal_id) and session.get(Animal, m.animal_id).farm_id == user.farm_id))
-        else:
-            milk_entries_count = len(milk_rows)
+        milk_rows = farm_session.exec(stmt_milk).all()
+        milk_entries_count = len(milk_rows)
 
         gest_q = select(Gestation).where((Gestation.predicted_calving_date >= date.today()) & (Gestation.actual_calving_date.is_(None)))
-        gest_list = session.exec(gest_q).all()
-        if user.farm_id:
-            gestations_count = sum(1 for g in gest_list if (session.get(Animal, g.animal_id) and session.get(Animal, g.animal_id).farm_id == user.farm_id))
-        else:
-            gestations_count = len(gest_list)
+        gest_list = farm_session.exec(gest_q).all()
+        gestations_count = len(gest_list)
 
     return templates.TemplateResponse("home.html", {"request": request, "user": user, "animals_count": animals_count, "milk_entries_count": milk_entries_count, "gestations_count": gestations_count})
 
 
 # ---------------------------------------------------------------------
 # Animals / CRUD / search / details / milk / breeding / vaccination reminders
+# (these routes use per-farm session to keep data isolated)
 # ---------------------------------------------------------------------
 
 
@@ -482,28 +528,27 @@ def home(request: Request, session: Session = Depends(get_session)):
 def animals_list(
     request: Request,
     q: Optional[str] = None,
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    stmt = select(Animal)
-    if user.farm_id and not user.is_admin:
-        stmt = stmt.where(Animal.farm_id == user.farm_id)
+    # always limit to user's farm (non-admins) — admin still sees only their chosen farm via session
+    stmt = select(Animal).where(Animal.farm_id == user.farm_id) if user.farm_id else select(Animal)
 
-    animals_all = session.exec(stmt.order_by(Animal.id)).all()
+    animals_all = farm_session.exec(stmt.order_by(Animal.id)).all()
 
     # simple search across tag_no, mother_tag_no, breed name
     if q:
         ql = q.lower()
         filtered = []
         for a in animals_all:
-            breed = session.get(Breed, a.breed_id) if a.breed_id else None
+            breed = farm_session.get(Breed, a.breed_id) if a.breed_id else None
             if (
                 ql in (a.tag_no or "").lower()
                 or ql in (a.mother_tag_no or "").lower()
-                or (breed and ql in breed.name.lower())
+                or (breed and ql in (breed.name or "").lower())
             ):
                 filtered.append(a)
         animals = filtered
@@ -536,20 +581,23 @@ def animals_create(
     health: Optional[str] = Form(None),
     weight: float = Form(0.0),
     reproductions: int = Form(0),
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
+    # create or get breed in master DB for canonical list (optional)
+    # We'll store breed reference in farm DB as well; if the breed exists in farm DB we use it, else create.
     breed_id = None
     if breed_name:
-        breed = session.exec(select(Breed).where(Breed.name == breed_name)).first()
+        # check farm DB first
+        breed = farm_session.exec(select(Breed).where(Breed.name == breed_name)).first()
         if not breed:
             breed = Breed(name=breed_name)
-            session.add(breed)
-            session.commit()
-            session.refresh(breed)
+            farm_session.add(breed)
+            farm_session.commit()
+            farm_session.refresh(breed)
         breed_id = breed.id
 
     animal = Animal(
@@ -567,11 +615,11 @@ def animals_create(
         weight=weight or 0.0,
         reproductions=int(reproductions or 0),
     )
-    session.add(animal)
+    farm_session.add(animal)
     try:
-        session.commit()
+        farm_session.commit()
     except IntegrityError:
-        session.rollback()
+        farm_session.rollback()
         raise HTTPException(status_code=400, detail="Tag already exists")
 
     return RedirectResponse(url="/animals", status_code=302)
@@ -581,38 +629,38 @@ def animals_create(
 def animal_detail(
     request: Request,
     animal_id: int,
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    animal = session.get(Animal, animal_id)
+    animal = farm_session.get(Animal, animal_id)
     if not animal:
         raise HTTPException(status_code=404, detail="Animal not found")
 
-    if user.farm_id and not user.is_admin and animal.farm_id != user.farm_id:
+    if user.farm_id and animal.farm_id != user.farm_id:
         raise HTTPException(status_code=403, detail="Not allowed")
 
-    breeding_events = session.exec(
+    breeding_events = farm_session.exec(
         select(BreedingEvent)
         .where(BreedingEvent.animal_id == animal_id)
         .order_by(BreedingEvent.event_date.desc())
     ).all()
 
-    gestation = session.exec(
+    gestation = farm_session.exec(
         select(Gestation)
         .where(Gestation.animal_id == animal_id)
         .order_by(Gestation.service_date.desc())
     ).first()
 
-    milk_entries = session.exec(
+    milk_entries = farm_session.exec(
         select(MilkYieldDaily)
         .where(MilkYieldDaily.animal_id == animal_id)
         .order_by(MilkYieldDaily.entry_date.desc())
     ).all()
 
-    vac_reminders = session.exec(
+    vac_reminders = farm_session.exec(
         select(VaccinationReminder)
         .where(VaccinationReminder.animal_id == animal_id)
         .order_by(VaccinationReminder.reminder_date.desc())
@@ -638,13 +686,13 @@ def animal_detail(
 def animal_edit_form(
     request: Request,
     animal_id: int,
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    animal = session.get(Animal, animal_id)
+    animal = farm_session.get(Animal, animal_id)
     if not animal:
         raise HTTPException(status_code=404, detail="Animal not found")
 
@@ -670,24 +718,24 @@ def animal_edit(
     health: Optional[str] = Form(None),
     weight: float = Form(0.0),
     reproductions: int = Form(0),
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    animal = session.get(Animal, animal_id)
+    animal = farm_session.get(Animal, animal_id)
     if not animal:
         raise HTTPException(status_code=404, detail="Animal not found")
 
     breed_id = None
     if breed_name:
-        breed = session.exec(select(Breed).where(Breed.name == breed_name)).first()
+        breed = farm_session.exec(select(Breed).where(Breed.name == breed_name)).first()
         if not breed:
             breed = Breed(name=breed_name)
-            session.add(breed)
-            session.commit()
-            session.refresh(breed)
+            farm_session.add(breed)
+            farm_session.commit()
+            farm_session.refresh(breed)
         breed_id = breed.id
 
     animal.tag_no = tag_no
@@ -704,10 +752,10 @@ def animal_edit(
     animal.reproductions = int(reproductions or 0)
 
     try:
-        session.add(animal)
-        session.commit()
+        farm_session.add(animal)
+        farm_session.commit()
     except IntegrityError:
-        session.rollback()
+        farm_session.rollback()
         raise HTTPException(status_code=400, detail="Tag already exists")
 
     return RedirectResponse(url=f"/animals/{animal_id}", status_code=302)
@@ -717,24 +765,24 @@ def animal_edit(
 def animal_delete(
     request: Request,
     animal_id: int,
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    animal = session.get(Animal, animal_id)
+    animal = farm_session.get(Animal, animal_id)
     if not animal:
         raise HTTPException(status_code=404, detail="Not found")
 
     # remove related rows (simple approach)
-    session.exec(select(MilkYieldDaily).where(MilkYieldDaily.animal_id == animal_id)).all()
-    session.exec(select(BreedingEvent).where(BreedingEvent.animal_id == animal_id)).all()
-    session.exec(select(Gestation).where(Gestation.animal_id == animal_id)).all()
-    session.exec(select(VaccinationReminder).where(VaccinationReminder.animal_id == animal_id)).all()
+    farm_session.exec(select(MilkYieldDaily).where(MilkYieldDaily.animal_id == animal_id)).all()
+    farm_session.exec(select(BreedingEvent).where(BreedingEvent.animal_id == animal_id)).all()
+    farm_session.exec(select(Gestation).where(Gestation.animal_id == animal_id)).all()
+    farm_session.exec(select(VaccinationReminder).where(VaccinationReminder.animal_id == animal_id)).all()
 
-    session.delete(animal)
-    session.commit()
+    farm_session.delete(animal)
+    farm_session.commit()
     return RedirectResponse(url="/animals", status_code=302)
 
 
@@ -745,14 +793,14 @@ def add_milk(
     entry_date: date = Form(...),
     am_liters: float = Form(0.0),
     pm_liters: float = Form(0.0),
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
     total = am_liters + pm_liters
-    existing = session.exec(
+    existing = farm_session.exec(
         select(MilkYieldDaily)
         .where(
             (MilkYieldDaily.animal_id == animal_id)
@@ -764,7 +812,7 @@ def add_milk(
         existing.pm_liters = pm_liters
         existing.total_liters = total
     else:
-        session.add(
+        farm_session.add(
             MilkYieldDaily(
                 animal_id=animal_id,
                 entry_date=entry_date,
@@ -773,7 +821,7 @@ def add_milk(
                 total_liters=total,
             )
         )
-    session.commit()
+    farm_session.commit()
     return RedirectResponse(url=f"/animals/{animal_id}", status_code=302)
 
 
@@ -784,13 +832,13 @@ def add_breeding_event(
     event_type: BreedingType = Form(...),
     event_date: date = Form(...),
     notes: Optional[str] = Form(None),
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    animal = session.get(Animal, animal_id)
+    animal = farm_session.get(Animal, animal_id)
     if not animal:
         raise HTTPException(status_code=404, detail="Animal not found")
 
@@ -800,11 +848,11 @@ def add_breeding_event(
         event_date=event_date,
         notes=notes,
     )
-    session.add(event)
+    farm_session.add(event)
 
     if event_type in {BreedingType.AI, BreedingType.NaturalService}:
         predicted = event_date + timedelta(days=DEFAULT_GESTATION_DAYS)
-        gest = session.exec(
+        gest = farm_session.exec(
             select(Gestation)
             .where(Gestation.animal_id == animal_id)
             .order_by(Gestation.service_date.desc())
@@ -813,7 +861,7 @@ def add_breeding_event(
             gest.service_date = event_date
             gest.predicted_calving_date = predicted
         else:
-            session.add(
+            farm_session.add(
                 Gestation(
                     animal_id=animal_id,
                     service_date=event_date,
@@ -821,7 +869,7 @@ def add_breeding_event(
                 )
             )
 
-    session.commit()
+    farm_session.commit()
     return RedirectResponse(url=f"/animals/{animal_id}", status_code=302)
 
 
@@ -831,13 +879,13 @@ def add_vaccination_reminder(
     animal_id: int,
     reminder_date: date = Form(...),
     notes: Optional[str] = Form(None),
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    animal = session.get(Animal, animal_id)
+    animal = farm_session.get(Animal, animal_id)
     if not animal:
         raise HTTPException(status_code=404, detail="Animal not found")
 
@@ -846,8 +894,8 @@ def add_vaccination_reminder(
         reminder_date=reminder_date,
         notes=notes,
     )
-    session.add(rem)
-    session.commit()
+    farm_session.add(rem)
+    farm_session.commit()
 
     return RedirectResponse(url=f"/animals/{animal_id}", status_code=302)
 
@@ -857,13 +905,13 @@ def mark_calved(
     request: Request,
     animal_id: int,
     calving_date: date = Form(...),
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    gest = session.exec(
+    gest = farm_session.exec(
         select(Gestation)
         .where(Gestation.animal_id == animal_id)
         .order_by(Gestation.service_date.desc())
@@ -872,42 +920,32 @@ def mark_calved(
         raise HTTPException(status_code=404, detail="No gestation record")
 
     gest.actual_calving_date = calving_date
-    session.commit()
+    farm_session.commit()
     return RedirectResponse(url=f"/animals/{animal_id}", status_code=302)
 
 
 # ---------------------------------------------------------------------
-# Dashboard (preserved behavior)
+# Dashboard (uses farm_session for farm data; master for farm list if needed)
 # ---------------------------------------------------------------------
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(
     request: Request,
-    session: Session = Depends(get_session),
+    farm_session: Session = Depends(get_farm_session),
+    master_session: Session = Depends(get_master_session),
 ):
-    user = get_current_user(request, session)
+    user = get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    stmt_animals = select(Animal)
-    if user.farm_id and not user.is_admin:
-        stmt_animals = stmt_animals.where(Animal.farm_id == user.farm_id)
-    animals = session.exec(stmt_animals).all()
+    stmt_animals = select(Animal).where(Animal.farm_id == user.farm_id) if user.farm_id else select(Animal)
+    animals = farm_session.exec(stmt_animals).all()
     total_animals = len(animals)
 
     today = date.today()
     stmt_milk = select(MilkYieldDaily).where(MilkYieldDaily.entry_date == today)
-
-    if user.farm_id and not user.is_admin:
-        milk_rows = []
-        for row in session.exec(stmt_milk).all():
-            a = session.get(Animal, row.animal_id)
-            if a and a.farm_id == user.farm_id:
-                milk_rows.append(row)
-    else:
-        milk_rows = session.exec(stmt_milk).all()
-
+    milk_rows = farm_session.exec(stmt_milk).all()
     milk_today = sum(m.total_liters for m in milk_rows) if milk_rows else 0
 
     last7_start = today - timedelta(days=6)
@@ -915,7 +953,7 @@ def dashboard(
         (MilkYieldDaily.entry_date >= last7_start)
         & (MilkYieldDaily.entry_date <= today)
     )
-    milk7 = session.exec(stmt7).all()
+    milk7 = farm_session.exec(stmt7).all()
     if milk7:
         total7 = sum(m.total_liters for m in milk7)
         avg_7 = round(total7 / 7, 2)
@@ -926,15 +964,8 @@ def dashboard(
         (Gestation.predicted_calving_date >= today)
         & (Gestation.actual_calving_date.is_(None))
     )
-    gest_list = session.exec(gest_q).all()
-    if user.farm_id and not user.is_admin:
-        pregnant_count = 0
-        for g in gest_list:
-            a = session.get(Animal, g.animal_id)
-            if a and a.farm_id == user.farm_id:
-                pregnant_count += 1
-    else:
-        pregnant_count = len(gest_list)
+    gest_list = farm_session.exec(gest_q).all()
+    pregnant_count = len(gest_list)
 
     start_chart = today - timedelta(days=13)
     chart_labels: List[str] = []
@@ -944,19 +975,12 @@ def dashboard(
         d = start_chart + timedelta(days=offset)
         label = d.strftime("%b %d")
         stmt_day = select(MilkYieldDaily).where(MilkYieldDaily.entry_date == d)
-        day_rows = session.exec(stmt_day).all()
-        if user.farm_id and not user.is_admin:
-            day_total = 0.0
-            for m in day_rows:
-                a = session.get(Animal, m.animal_id)
-                if a and a.farm_id == user.farm_id:
-                    day_total += m.total_liters
-        else:
-            day_total = sum(m.total_liters for m in day_rows)
+        day_rows = farm_session.exec(stmt_day).all()
+        day_total = sum(m.total_liters for m in day_rows)
         chart_labels.append(label)
         chart_values.append(day_total)
 
-    recent_events = session.exec(
+    recent_events = farm_session.exec(
         select(BreedingEvent).order_by(BreedingEvent.event_date.desc())
     ).all()[:5]
 
