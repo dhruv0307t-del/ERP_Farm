@@ -2,6 +2,7 @@
 from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Optional, List, Dict
+from sqlalchemy.exc import OperationalError
 import sqlite3
 import os
 import shutil
@@ -82,7 +83,24 @@ def get_engine_for_farm(farm_id: Optional[int]):
 
 
 def create_tables_for_engine(engine):
-    SQLModel.metadata.create_all(engine)
+    """
+    Create tables for the given engine.
+
+    This is wrapped in a try/except so that if multiple processes
+    (Gunicorn workers) try to run this at the same time on SQLite,
+    we ignore the 'table ... already exists' race condition instead of crashing.
+    """
+    try:
+        SQLModel.metadata.create_all(engine)
+    except OperationalError as e:
+        msg = str(e).lower()
+        # Typical SQLite error: "table XYZ already exists"
+        if "already exists" in msg:
+            # Another worker got there first – safe to ignore
+            return
+        # Anything else is a real error and should be seen
+        raise
+
 
 
 # ---------------------------------------------------------------------
