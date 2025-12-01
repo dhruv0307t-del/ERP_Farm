@@ -499,12 +499,18 @@ def signup(
 # ---------------------------------------------------------------------
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def root_redirect(request: Request, farm_session: Session = Depends(get_farm_session)):
     user = get_current_user(request)
     animals_count = None
     milk_entries_count = None
     gestations_count = None
+
+    # HEAD request ke liye sirf lightweight response, body ki zarurat nahi
+    if request.method == "HEAD":
+        # FastAPI HEAD ka body ignore kar deta hai, sirf status/headers important hain.
+        return HTMLResponse(status_code=200)
+
     if user:
         stmt = select(Animal).where(Animal.farm_id == user.farm_id) if user.farm_id else select(Animal)
         animals_count = len(farm_session.exec(stmt).all())
@@ -513,13 +519,23 @@ def root_redirect(request: Request, farm_session: Session = Depends(get_farm_ses
         milk_rows = farm_session.exec(stmt_milk).all()
         milk_entries_count = len(milk_rows)
 
-        gest_q = select(Gestation).where((Gestation.predicted_calving_date >= date.today()) & (Gestation.actual_calving_date.is_(None)))
+        gest_q = select(Gestation).where(
+            (Gestation.predicted_calving_date >= date.today())
+            & (Gestation.actual_calving_date.is_(None))
+        )
         gest_list = farm_session.exec(gest_q).all()
         gestations_count = len(gest_list)
 
-    return templates.TemplateResponse("home.html", {"request": request, "user": user, "animals_count": animals_count, "milk_entries_count": milk_entries_count, "gestations_count": gestations_count})
-
-
+    return templates.TemplateResponse(
+        "home.html",
+        {
+            "request": request,
+            "user": user,
+            "animals_count": animals_count,
+            "milk_entries_count": milk_entries_count,
+            "gestations_count": gestations_count,
+        },
+    )
 @app.get("/home", response_class=HTMLResponse)
 def home(request: Request, farm_session: Session = Depends(get_farm_session)):
     user = get_current_user(request)
