@@ -271,21 +271,37 @@ def create_db_and_tables_for_master_and_farm(farm_id: Optional[int] = None):
 
 
 def init_master_db() -> None:
-    """Create master tables, and a default farm/admin if missing."""
+    """Create master tables, and a default farm/admin if missing (race-safe)."""
     master_eng = get_master_engine()
     create_tables_for_engine(master_eng)
 
     with Session(master_eng) as session:
-        farm = session.exec(select(Farm)).first()
+        # 1) Ensure at least one farm exists (Default Farm)
+        farm = session.exec(select(Farm).order_by(Farm.id)).first()
         if not farm:
             farm = Farm(name="Default Farm", location="Unknown")
             session.add(farm)
-            session.commit()
-            session.refresh(farm)
-            # create per-farm DB for default farm too
-            create_db_and_tables_for_master_and_farm(farm.id)
+            try:
+                session.commit()
+            except IntegrityError:
+                # Agar doosra worker already farm create kar chuka,
+                # to yaha UNIQUE/constraint aa sakta hai -> ignore & reload from DB
+                session.rollback()
+                farm = session.exec(select(Farm).order_by(Farm.id)).first()
+            else:
+                session.refresh(farm)
+        # safety: agar phir bhi null ho (kisi weird case me), to yahin se return
+        if not farm:
+            return
 
-        admin = session.exec(select(User).where(User.username == "admin")).first()
+        # Per-farm DB ensure (idempotent; race handle ho chuka hai create_tables_for_engine me)
+        create_db_and_tables_for_master_and_farm(farm.id)
+
+        # 2) Ensure default admin user exists, race-safe
+        admin = session.exec(
+            select(User).where(User.username == "admin")
+        ).first()
+
         if not admin:
             admin = User(
                 username="admin",
@@ -295,7 +311,16 @@ def init_master_db() -> None:
                 farm_id=farm.id,
             )
             session.add(admin)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # matlab kisi aur worker ne isi time admin create kar diya
+                session.rollback()
+                # optional: phir se fetch kar lo, agar chahiye to
+                # admin = session.exec(
+                #     select(User).where(User.username == "admin")
+                # ).first()
+
 
 # ---------------------------------------------------------------------
 # Session dependencies
