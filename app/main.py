@@ -32,6 +32,11 @@ from passlib.exc import UnknownHashError
 
 app = FastAPI(title="Cattle ERP with Auth")
 
+# ✅ Health check endpoint: Render ko yahi path doge
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 # serve static files (so /static/... works for images, css, js)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
